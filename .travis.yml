@@ -1,36 +1,68 @@
+sudo: required
+
 language: cpp
 
-git:
-  submodules: false
-
-before_install:
-- sudo add-apt-repository "deb http://archive.ubuntu.com/ubuntu $(lsb_release -sc) universe"
-- sudo add-apt-repository -y ppa:zoogie/sdl2-snapshots
-- sudo add-apt-repository -y ppa:openrave/release
-- sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-- sudo add-apt-repository -y ppa:spvkgn/mediainfo 
-- sudo apt-add-repository -y ppa:sfttech/random  # libepoxy
-- sudo apt-get -qq update
-- sudo apt-get -qq install pkg-config libtinyxml2-dev libepoxy-dev libunittest++-dev libsdl2-mixer-dev assimp-dev g++-4.8
-- sudo ln -sf /usr/bin/g++-4.8 /usr/bin/g++
-- sudo ln -sf /usr/lib/libassimp3.0.so /usr/lib/libassimp.so
-- sed -i 's/git@github.com:/https:\/\/github.com\//' .gitmodules
-- git submodule update --init --depth 1
-
-compiler:
-- gcc
-- clang
-
-before_script:
-- mkdir build && cd build
-
-script:
-- cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PWD/install ..
-- make install -j4
-- make tests -j4
-- ctest -j4
+matrix:
+  include:
+    - os: linux
+      services: docker
+      before_install: docker pull glportal/whale-gcc:bullet285
+      script:
+        - set -e
+        - docker run -it --rm -w /data -v $(pwd):/data glportal/whale-gcc:bullet285 bash -c "cmake -G Ninja ./; ninja -j 4; ninja tests;"
+    - os: osx
+      osx_image: xcode8.3
+      compiler: gcc
+      git:
+        submodules: false
+      before_install:
+        - brew update
+      install:
+        - brew install assimp
+        - brew install libepoxy
+        - brew install sdl2
+        - brew install sdl2_mixer
+        - brew install bullet
+        - brew install tinyxml2
+        - brew install unittest-cpp
+        - brew install freeimage
+      before_script:
+        - git submodule update --init --recursive
+        - mkdir build && cd build
+        - export CC=gcc CXX=g++
+      script:
+        - cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PWD/install ..
+        - make -j4
+    - os: osx
+      osx_image: xcode8.3
+      compiler: clang
+      git:
+        submodules: false
+      before_install:
+        - brew update
+      install:
+        - brew install assimp
+        - brew install libepoxy
+        - brew install sdl2
+        - brew install sdl2_mixer
+        - brew install bullet
+        - brew install tinyxml2
+        - brew install unittest-cpp
+        - brew install freeimage
+      before_script:
+        - git submodule update --init --recursive
+        - mkdir build && cd build
+      script:
+        - set -e
+        - cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PWD/install ..
+        - make -j4
 
 notifications:
-  irc: "irc.freenode.com##glportal"
-  use_notice: true
-  skip_join: true
+  irc: "chat.freenode.net#glportal"
+  slack: glportal:6owD9V6VXhGmM7yyEd2hIZue
+  webhooks:
+    urls:
+      - https://webhooks.gitter.im/e/ea210c016747790b4fa4
+    on_success: always
+    on_failure: always
+    on_start: never

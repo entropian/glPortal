@@ -1,128 +1,105 @@
-#include "WorldHelper.hpp"
-#include <assets/scene/SceneHelper.hpp>
-#include <climits>
-#include <engine/component/AACollisionBox.hpp>
-#include <engine/component/MeshDrawable.hpp>
-#include <engine/Ray.hpp>
-#include <assets/texture/TextureLoader.hpp>
-#include <SDL2/SDL_timer.h>
+#include <glPortal/WorldHelper.hpp>
+#include <glPortal/Portal.hpp>
+#include <glPortal/trigger/PortalTeleport.hpp>
+
+#include <bullet/BulletDynamics/Dynamics/btDiscreteDynamicsWorld.h>
+
+#include <radix/data/texture/TextureLoader.hpp>
+#include <radix/entities/traits/MeshDrawableTrait.hpp>
+#include <radix/simulation/Physics.hpp>
+#include <radix/entities/traits/LightSourceTrait.hpp>
+#include <radix/entities/Trigger.hpp>
+#include <radix/util/BulletUserPtrInfo.hpp>
+
+using namespace radix;
 
 namespace glPortal {
-void WorldHelper::shootPortal(int button, Scene *scene) {
-  //Shooting
-  Vector3f cameraDir = Math::toDirection(scene->camera.getRotation());
 
-  //Find the closest intersection
-  const Entity *closestWall = nullptr;
-  float intersection = INT_MAX;
-  for (const Entity &e : scene->entities) {
-    // FIXME: Collsion + MeshDrawable isn't the sole criteria we want to check
-    if (e.hasComponent<AACollisionBox>() and e.hasComponent<MeshDrawable>()) {
-      Ray bullet(scene->camera.getPosition(), cameraDir);
-      float tNear, tFar;
-      if (bullet.collides(e.getComponent<AACollisionBox>().box, &tNear, &tFar)) {
-        if (tNear < intersection) {
-          closestWall = &e;
-          intersection = tNear;
+void WorldHelper::shootPortal(int button, World &world) {
+  Vector3f cameraDir = Math::toDirection(world.camera->getOrientation());
+  btVector3 btFrom = world.camera->getPosition();
+  btVector3 btTo = btFrom + cameraDir*10000;
+  btCollisionWorld::ClosestRayResultCallback res(btFrom, btTo);
+
+  simulation::Physics &phys = world.simulations.findFirstOfType<simulation::Physics>();
+  phys.getPhysicsWorld().rayTest(btFrom, btTo, res);
+
+  if (res.hasHit()) {
+    const Entity *pEnt = util::getBtPtrInfo(res.m_collisionObject).entity;
+    // All RigidBodies should have their pointer set, but check anyway
+    if (pEnt) {
+      const Entity &ent = *pEnt;
+      // TODO: material in separate Component, + 1 mat per face
+      const auto *mdt = dynamic_cast<const entities::MeshDrawableTrait*>(&ent);
+      if (mdt and
+          mdt->material.portalable) {
+        EntityPair &pPair = getPortalPair(0, world);
+        Vector3f ipos(res.m_hitPointWorld);
+        Entity &pEnt = (button == 1) ? *pPair.first : *pPair.second;
+        Portal &portal = dynamic_cast<Portal&>(pEnt);
+        portal.openSince = world.getTime();
+        portal.maskTex.diffuse = TextureLoader::getTexture("portalmask.png");
+        portal.placeOnWall(world.camera->getPosition(), ipos, res.m_hitNormalWorld);
+        auto &pLight = static_cast<entities::LightSourceTrait&>(portal);
+        
+        if (portal.trigger == nullptr) {
+          portal.trigger = &world.entityManager.create<radix::entities::Trigger>();
+        }
+        portal.trigger->setScale(portal.getScale());
+        Vector3f modPos = ipos - ((portal.getScale() / 1.15) * portal.getDirection());
+        portal.trigger->setPosition(modPos);
+        Destination destination;
+        destination.position = ipos + portal.getDirection();
+        destination.rotation = Vector3f{};
+        destination.orientation = portal.getOrientation();
+        if (button == 1) {
+          world.destinations["portal1"] = destination;
+          PortalTeleport::setAction(*portal.trigger, "portal2");
+          portal.overlayTex.diffuse = TextureLoader::getTexture("blueportal.png");
+          portal.color = pLight.color = Portal::BLUE_COLOR;
+        } else {
+          world.destinations["portal2"] = destination;
+          PortalTeleport::setAction(*portal.trigger, "portal1");
+          portal.overlayTex.diffuse = TextureLoader::getTexture("orangeportal.png");
+          portal.color = pLight.color = Portal::ORANGE_COLOR;
+        }
+        // if both portals are open add the uncollider
+        Entity &pEnt1 = *pPair.first;
+        Entity &pEnt2 = *pPair.second;
+        Portal &portal1 = dynamic_cast<Portal&>(pEnt1);
+        Portal &portal2 = dynamic_cast<Portal&>(pEnt2);
+        if (portal1.open && portal2.open) {
+          portal1.addUncollider();
+          portal2.addUncollider();
         }
       }
     }
   }
+}
 
-  EntityPair &pPair = SceneHelper::getPortalPairFromScene(0, scene);
-  // TODO: material in separate Component, + 1 mat per face
-  if (closestWall != nullptr and (closestWall->getComponent<MeshDrawable>().material.portalable)) {
-    Vector3f ipos = scene->camera.getPosition() + (cameraDir * intersection);
-    Entity &pEnt = (button == 1) ? *pPair.first : *pPair.second;
-    Portal &portal = pEnt.getComponent<Portal>();
-    portal.openSince = SDL_GetTicks();
-    portal.maskTex.diffuse = TextureLoader::getTexture("portalmask.png"); 
-    portal.placeOnWall(scene->camera.getPosition(), closestWall->getComponent<AACollisionBox>().box, ipos);
-    LightSource &pLight = pEnt.getComponent<LightSource>();
-
-    if (button == 1) {
-      portal.overlayTex.diffuse = TextureLoader::getTexture("blueportal.png");
-      portal.color = pLight.color = Portal::BLUE_COLOR;
-    } else {
-      portal.overlayTex.diffuse = TextureLoader::getTexture("orangeportal.png");
-      portal.color = pLight.color = Portal::ORANGE_COLOR;
-    }
+EntityPair& WorldHelper::getPortalPair(int pair, World &world) {
+  if (pair > ((int) world.entityPairs.at("portalPairs").size()) - 1) {
+    Portal *portal1 = &world.entityManager.create<Portal>();
+    Portal *portal2 = &world.entityManager.create<Portal>();
+    EntityPair pair = std::make_pair(portal1, portal2);
+    world.entityPairs.at("portalPairs").push_back(pair);
   }
+  return world.entityPairs.at("portalPairs").at(pair);
 }
 
-bool WorldHelper::isPlayerPortalingX(BoxCollider &box, Entity *player, Scene *scene) {
-  bool portaling = false;
-  for (const EntityPair &p : scene->portalPairs) {
-    const Portal &portal1 = p.first->getComponent<Portal>(),
-      &portal2 = p.second->getComponent<Portal>();
-    if (portal1.open and portal2.open) {
-      const Transform &p1Tform = p.first->getComponent<Transform>(),
-        &p2Tform = p.second->getComponent<Transform>();
-      if (portal1.inPortal(box)) {
-        if (p1Tform.rotation.x == 0 and (p1Tform.rotation.y == rad(-90) || p1Tform.rotation.y == rad(90))) {
-          portaling = true;
-        }
-      }
-      if (portal2.inPortal(box)) {
-        if (p2Tform.rotation.x == 0 and (p2Tform.rotation.y == rad(-90) || p2Tform.rotation.y == rad(90))) {
-          portaling = true;
-        }
-      }
-    }
-  }
-  return portaling;
+void WorldHelper::closePortals(World &world) {
+  EntityPair &pPair = getPortalPair(0, world);
+  Portal *portal1 = dynamic_cast<Portal*>(pPair.first);
+  Portal *portal2 = dynamic_cast<Portal*>(pPair.second);
+
+  portal1->open = false;
+  portal2->open = false;
+  
+  portal1->trigger->remove();
+  portal2->trigger->remove();
+  
+  portal1->removeUncollider();
+  portal2->removeUncollider();
 }
 
-bool WorldHelper::isPlayerPortalingY(BoxCollider &box, Entity *player, Scene *scene) {
-  bool portaling = false;
-  for (const EntityPair &p : scene->portalPairs) {
-    const Portal &portal1 = p.first->getComponent<Portal>(),
-      &portal2 = p.second->getComponent<Portal>();
-    if (portal1.open and portal2.open) {
-      const Transform &p1Tform = p.first->getComponent<Transform>(),
-        &p2Tform = p.second->getComponent<Transform>();
-      if (portal1.inPortal(box)) {
-        if (p1Tform.rotation.x == rad(-90) || p1Tform.rotation.x == rad(90)) {
-          portaling = true;
-        }
-      }
-      if (portal2.inPortal(box)) {
-        if (p2Tform.rotation.x == rad(-90) || p2Tform.rotation.x == rad(90)) {
-          portaling = true;
-        }
-      }
-    }
-  }
-  return portaling;
-}
-
-bool WorldHelper::isPlayerPortalingZ(BoxCollider &box, Entity *player, Scene *scene) {
-  bool portaling = false;
-  for (const EntityPair &p : scene->portalPairs) {
-    const Portal &portal1 = p.first->getComponent<Portal>(),
-      &portal2 = p.second->getComponent<Portal>();
-    if (portal1.open and portal2.open) {
-      const Transform &p1Tform = p.first->getComponent<Transform>(),
-        &p2Tform = p.second->getComponent<Transform>();
-      if (portal1.inPortal(box)) {
-        if (p1Tform.rotation.x == 0 and (p1Tform.rotation.y == 0 || p1Tform.rotation.y == rad(180))) {
-          portaling = true;
-        }
-      }
-      if (portal2.inPortal(box)) {
-        if (p2Tform.rotation.x == 0 and (p2Tform.rotation.y == 0 || p2Tform.rotation.y == rad(180))) {
-          portaling = true;
-        }
-      }
-    }
-  }
-  return portaling;
-}
-
-void WorldHelper::hidePortals(Scene *scene) {
-  EntityPair &pPair = SceneHelper::getPortalPairFromScene(0, scene);
-
-  pPair.first->getComponent<Portal>().open = false;
-  pPair.second->getComponent<Portal>().open = false;
-}
 } /* namespace glPortal */

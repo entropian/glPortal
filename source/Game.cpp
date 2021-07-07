@@ -1,115 +1,71 @@
-#include "Game.hpp"
+#include <glPortal/Game.hpp>
 
-#include <SDL2/SDL_keyboard.h>
-#include <SDL2/SDL_timer.h>
-#include <stdexcept>
-#include <string>
-#include <cstdio>
-#include <iostream>
 
-#include "engine/env/ConfigFileParser.hpp"
-#include "engine/env/Environment.hpp"
-#include "engine/env/ArgumentsParser.hpp"
-#include <engine/env/System.hpp>
-#include <engine/SoundManager.hpp>
-#include <util/sdl/Fps.hpp>
-#include "Input.hpp"
+#include <radix/entities/Trigger.hpp>
+#include <radix/entities/Player.hpp>
+#include <radix/simulation/Physics.hpp>
+
+#include <glPortal/trigger/PortalTeleport.hpp>
 
 namespace glPortal {
 
-Fps Game::fps;
+Game::Game() {
+  windowTitle = "GlPortal";
+  defaultMap = "/maps/n1.xml";
+  gameController = std::make_unique<GameController>(this);
+  inputManager = std::make_unique<InputManager>(this);
+}
 
-Game::Game() : closed(false) {
-  window.create("GlPortal");
+void Game::onPreStartWorld() {
+  gameController->init();
+  initRenderers();
+  addRenderers();
+  world->simulations.findFirstOfType<radix::simulation::Physics>().setDebugDraw(physicsDebugDraw.get());
+  world->entityPairs.insert(std::make_pair("portalPairs", std::vector<radix::EntityPair>()));
+}
+void Game::onPostStartWorld() {}
+void Game::onPreStopWorld() {}
+void Game::onPostStopWorld() {
+  gameRenderer.reset();
+  uiRenderer.reset();
+}
 
-  try {
-    SoundManager::Init();
-    world.create();
-    world.setRendererWindow(&window);
-    update();
-  }
-  catch (std::runtime_error &e) {
-    System::Log(Error) << "Runtime Error: " << e.what();
-  }
+void Game::onInit() {
+  physicsDebugDraw.reset(new radix::PhysicsDebugDraw);
+}
+
+void Game::onShutdown() {
+  physicsDebugDraw.reset(nullptr);
+}
+
+void Game::customTriggerHook() {
+  customTriggers.push_back(PortalTeleport());
+}
+
+void Game::processInput() {
 }
 
 void Game::update() {
-  SDL_Event event;
-  int skipped;
-  unsigned int nextUpdate = SDL_GetTicks();
-
-  while (not closed) {
-    skipped = 0;
-    //Update the game if it is time
-    while (SDL_GetTicks() > nextUpdate && skipped < MAX_SKIP) {
-      while (SDL_PollEvent(&event)) {
-        handleEvent(event);
-      }
-
-      SoundManager::Update(world.getPlayer());
-      world.update();
-      nextUpdate += SKIP_TIME;
-      skipped++;
-    }
-    world.render();
-    fps.countCycle();
-    window.swapBuffers();
-  }
-  world.destroy();
-  window.close();
+  dtime = (currentTime-lastRender)/1000.;
+  BaseGame::update();
 }
 
-void Game::close() {
-  closed = true;
-}
+void Game::initRenderers() {
+  World& worldReference = static_cast<glPortal::World&>(*world);
+  radix::Renderer& rendererReference = *renderer.get();
+  gameRenderer =
+    std::make_unique<GameRenderer>(worldReference, rendererReference, world->camera.get(), &dtime);
+  uiRenderer =
+    std::make_unique<UiRenderer>(worldReference, rendererReference);
+  portalRenderer =
+    std::make_unique<radix::PortalRenderer>(worldReference, rendererReference,
+        this->gameWorld);
+ }
 
-void Game::handleEvent(const SDL_Event &event) {
-  if (event.type == SDL_QUIT) {
-    closed = 1;
-  }
-  if (event.type == SDL_KEYDOWN) {
-    int key = event.key.keysym.scancode;
-    int mod = event.key.keysym.mod;
-
-    Input::keyPressed(key, mod);
-
-    if (key == SDL_SCANCODE_Q) {
-      close();
-    }
-  }
-  if (event.type == SDL_KEYUP) {
-    int key = event.key.keysym.scancode;
-    int mod = event.key.keysym.mod;
-
-    Input::keyReleased(key, mod);
-  }
-  if (event.type == SDL_MOUSEBUTTONDOWN) {
-    if (event.button.button == SDL_BUTTON_LEFT) {
-      world.shootPortal(1);
-    }
-    if (event.button.button == SDL_BUTTON_RIGHT) {
-      world.shootPortal(2);
-    }
-    if (event.button.button == SDL_BUTTON_MIDDLE  and Config::isHidePortalsByClick()) {
-      world.hidePortals();
-    }
-  }
+void Game::addRenderers() {
+  renderer->addRenderer(*gameRenderer);
+  renderer->addRenderer(*uiRenderer);
+  renderer->addRenderer(*portalRenderer);
 }
 
 } /* namespace glPortal */
-
-using namespace glPortal;
-
-Window window;
-
-int main(int argc, char *argv[]) {
-  System::Init();
-  ArgumentsParser::setEnvironmentFromArgs(argc, argv);
-  Environment::init();
-  ArgumentsParser::populateConfig();
-  Config::load();
-
-  Game game;
-
-  return 0;
-}
